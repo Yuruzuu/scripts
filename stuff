@@ -1,140 +1,124 @@
--- Module by 1waffle1, optimized by boatbomber
--- https://devforum.roblox.com/t/text-compression/163637
+local httpService = game:GetService('HttpService')
 
-local dictionary = {}
-do -- populate dictionary
-	local length = 0
-	for i = 32, 127 do
-		if i ~= 34 and i ~= 92 then
-			local c = string.char(i)
-			dictionary[c], dictionary[length] = length, c
-			length = length + 1
+local pastebinModule = {}
+pastebinModule.userDetails = nil
+pastebinModule.devKey = 'mlvbGbgFRyd_AI3EoMv5euWu-pTXZOcX' --paste your dev key here which you can find at https://pastebin.com/doc_api
+
+local userKey -- be careful with this variable
+local mainUrl = 'https://pastebin.com/'
+local apiPage = 'api/api_'
+local rawPage = 'raw/'
+
+local function encodeParamsUrl(data)
+	local s = 'api_dev_key='..httpService:UrlEncode(pastebinModule.devKey)
+	for i, v in data do
+		if v then
+			s..= '&api_'..i..'='..httpService:UrlEncode(v)
 		end
-	end
+	end 
+	return s
 end
 
-local escapemap = {}
-do -- Populate escape map
-	for i = 1, 34 do
-		i = ({ 34, 92, 127 })[i - 31] or i
-		local c, e = string.char(i), string.char(i + 31)
-		escapemap[c], escapemap[e] = e, c
-	end
-end
-
-local function escape(s)
-	return string.gsub(s, '[%c"\\]', function(c)
-		return "\127" .. escapemap[c]
+local function httpPost(dir: string, data: {[string]:string})
+	local success, value = pcall(function()
+		local url, encodedData = mainUrl..apiPage..dir..'.php', encodeParamsUrl(data)
+		print(url, encodedData)
+		return httpService:PostAsync(url, encodedData, Enum.HttpContentType.ApplicationUrlEncoded)
 	end)
-end
-local function unescape(s)
-	return string.gsub(s, "\127(.)", function(c)
-		return escapemap[c]
-	end)
-end
-
-local function copy(t)
-	local new = {}
-	for k, v in pairs(t) do
-		new[k] = v
-	end
-	return new
-end
-
-local b93Cache = {}
-local function tobase93(n)
-	local value = b93Cache[n+1]
-	if value then
+	if success then
 		return value
+	else
+		warn(value)
 	end
-
-	value = ""
-	repeat
-		local remainder = n % 93
-		value = dictionary[remainder] .. value
-		n = (n - remainder) / 93
-	until n == 0
-
-	b93Cache[n] = value
-	return value
 end
 
-local b10Cache = {}
-local function tobase10(value)
-	local n = b10Cache[value]
-	if n then
-		return n
+local function httpRawGet(dir)
+	local success, value = pcall(function()
+		local url = mainUrl..rawPage..dir
+		return httpService:GetAsync(url, false)
+	end)
+	if success then
+		return value
+	else
+		warn(value)
 	end
-
-	n = 0
-	for i = 1, #value do
-		n = n + 93 ^ (i - 1) * dictionary[string.sub(value, -i, -i)]
-	end
-
-	b10Cache[value] = n
-	return n
 end
 
-local function compress(text)
-	local dictionaryCopy = copy(dictionary)
-	local key, sequence, size = "", {}, #dictionaryCopy
-	local width, spans, span = 1, {}, 0
-	local function listkey(k)
-		local value = tobase93(dictionaryCopy[k])
-		local valueLength = #value
-		if valueLength > width then
-			width, span, spans[width] = valueLength, 0, span
-		end
-		table.insert(sequence, string.rep(" ", width - valueLength) .. value)
-		span += 1
-	end
-	text = escape(text)
-	for i = 1, #text do
-		local c = string.sub(text, i, i)
-		local new = key .. c
-		if dictionaryCopy[new] then
-			key = new
-		else
-			listkey(key)
-			key = c
-			size += 1
-			dictionaryCopy[new], dictionaryCopy[size] = size, new
+local function decodeUserDetails(cssString: string)
+	local userDetails = {}
+	for _, str in cssString:gsub('<user>', ''):gsub('%s', ''):gsub('</[^>]+>', ''):split('<') do
+		local i = str:gsub('<', ''):split('>')[1]:gsub('user_', '')
+		if not i:find('avatar') then
+			userDetails[i] = str:gsub('<[^>]+>', ''):split('>')[2]
 		end
 	end
-	listkey(key)
-	spans[width] = span
-	return table.concat(spans, ",") .. "|" .. table.concat(sequence)
+	userDetails.username = userDetails.name
+	userDetails.name = nil
+	return userDetails
 end
 
-local function decompress(text)
-	local dictionaryCopy = copy(dictionary)
-	local sequence, spans, content = {}, string.match(text, "(.-)|(.*)")
-	local groups, start = {}, 1
-	for span in string.gmatch(spans, "%d+") do
-		local width = #groups + 1
-		groups[width] = string.sub(content, start, start + span * width - 1)
-		start = start + span * width
-	end
-	local previous
-
-	for width, group in ipairs(groups) do
-		for value in string.gmatch(group, string.rep(".", width)) do
-			local entry = dictionaryCopy[tobase10(value)]
-			if previous then
-				if entry then
-					table.insert(dictionaryCopy, previous .. string.sub(entry, 1, 1))
-				else
-					entry = previous .. string.sub(previous, 1, 1)
-					table.insert(dictionaryCopy, entry)
-				end
-				table.insert(sequence, entry)
-			else
-				sequence[1] = entry
+local function decodePasteList(pasteListString: string)
+	local pasteList = {}
+	for _, paste in pasteListString:split('<paste>') do
+		local pasteData = {}
+		for _, str in paste:gsub('%s', ''):gsub('</[^>]+>', ''):split('<') do
+			local i = str:gsub('<', ''):split('>')[1]:gsub('user_', '')
+			if not i:find('avatar') then
+				pasteData[i] = str:gsub('<[^>]+>', ''):split('>')[2]
 			end
-			previous = entry
+		end
+		if pasteData.paste_key then
+			pasteList[pasteData.paste_key] = pasteData
 		end
 	end
-	return unescape(table.concat(sequence))
+	return pasteList
 end
 
-return { Compress = compress, Decompress = decompress }
+function pastebinModule:createPaste(guest: boolean, content: string, name: string, lifetime: string, format: string, privacy: number)
+	return httpPost('post', {option='paste', user_key = (not guest and userKey),  paste_code=content, paste_name=name, paste_expire_date=lifetime, paste_format=format, paste_private = privacy})
+end
+
+function pastebinModule:deletePaste(pasteCode: string)
+	if userKey then
+		return httpPost('post', {option='delete', user_key = userKey, paste_key = pasteCode})
+	end
+end
+
+function pastebinModule:fetchPaste(pasteCode: string, raw: boolean)
+	if userKey and not raw then
+		return httpPost('raw', {option='show_paste', user_key=userKey, paste_key=pasteCode})
+	else
+		return httpRawGet(pasteCode)
+	end
+end
+
+function pastebinModule:listUserPastes(listLen: number)
+	if userKey then
+		local pasteList = httpPost('post', {option='list', user_key=userKey, results_limit=listLen})
+		if pasteList then
+			return decodePasteList(pasteList)
+		end
+	end
+end
+
+function pastebinModule:userLogin(username: string, password: string)
+	local promptKey = httpPost('login', {user_name=username, user_password=password})
+	if promptKey then
+		local promptDetails = httpPost('post', {user_key=promptKey, option='userdetails'})
+		if promptDetails then
+			userKey = promptKey
+			local userDetails = decodeUserDetails(promptDetails)
+			self.userDetails = userDetails
+			print('Successfully logged in as '..userDetails.username..' at '..mainUrl)
+			return true
+		end
+	end
+end
+
+function pastebinModule:userLogout()
+	userKey=nil
+	self.userDetails=nil
+	print('Successfully logged out of '..mainUrl)
+end
+
+return pastebinModule
